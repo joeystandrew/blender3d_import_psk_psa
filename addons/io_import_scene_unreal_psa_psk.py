@@ -52,7 +52,7 @@ Github: https://github.com/Befzz/blender3d_import_psk_psa
 import bpy
 import math
 import re
-from mathutils import Vector, Matrix, Quaternion
+from mathutils import Vector, Matrix, Quaternion, Euler
 from bpy.props import (FloatProperty,
                        StringProperty,
                        BoolProperty,
@@ -86,10 +86,17 @@ class class_md5_bone:
     parent = None
     parent_name = ""
     parent_index = 0
-    __matrix_local_rot = None
-    __matrix_global_rot = None
-    __matrix_local = None
-    __matrix_global = None
+    matrix_local_rot = None
+    matrix_global_rot = None
+    matrix_local = None
+    matrix_global = None
+    # dev
+    quat_local = None
+    quat_global = None
+    vec_tail_axis = Vector((0, 0, 1))
+
+    # def __init__(self):
+    # self.vec_tail_axis = Vector((0,0,1))
 
     def dump(self):
         print("bone index: ", self.bone_index)
@@ -98,6 +105,54 @@ class class_md5_bone:
         print("parent: ", self.parent)
         print("parent index: ", self.parent_index)
         # print ("blenderbone: ", self.blenderbone)
+
+def blen_calc_bone_orient(md5_bones, md5_bone, blen, outv=[]):
+    children = []
+    for bone in md5_bones:
+        if bone.bone_index == 0:
+            continue
+        if bone.parent_index == md5_bone.bone_index:
+            children.append(bone)
+
+    # print("%s %i" % (md5_bone.name, len(children)))
+    # print(md5_bone.name, len(children))
+    if len(children) == 0:
+        # dev
+        outv.append(Vector((0, blen, 0)))
+        # print('leaf',md5_bone.vec_tail_axis)
+        # Vector((0,blen,0))
+        return md5_bone.matrix_global * md5_bone.parent.vec_tail_axis
+        # dev
+
+    sumvec = Vector()
+    for child in children:
+        sumvec += (child.matrix_global.translation)
+    vec_to = sumvec / len(children) - md5_bone.matrix_global.translation
+
+    vec = md5_bone.quat_global.inverted() * vec_to
+
+    # mrot = md5_bone.matrix_global.to_3x3()
+
+    vec_ori = Vector()
+    if abs(vec[0]) > abs(vec[1]):
+        if abs(vec[0]) > abs(vec[2]):
+            vec_ori.x = blen if vec[0] >= 0 else -blen
+        else:
+            vec_ori.z = blen if vec[2] >= 0 else -blen
+    else:
+        if abs(vec[1]) > abs(vec[2]):
+            vec_ori.y = blen if vec[1] >= 0 else -blen
+        else:
+            vec_ori.z = blen if vec[2] >= 0 else -blen
+    outv.append(vec_ori)
+
+    # vec_ori = vec_ori.normalized() * (vec.length/2)
+    # if md5_bone.name == 'RightUpLeg':
+    #     print('vec_ori', vec_ori)
+    md5_bone.vec_tail_axis = vec_ori.copy()
+    # print('XXX',md5_bone.vec_tail_axis)
+    return md5_bone.matrix_global * vec_ori
+    # return md5_bone.matrix_global * Vector((0,bpy.context.scene.psk_import.bonesize,0))
 
 
 def select_all(select):
@@ -148,7 +203,6 @@ def pskimport(filepath, bImportmesh, bImportbone, bDebugLogPSK, bImportsingleuv)
     if not bImportbone and not bImportmesh:
         util_ui_show_msg("Nothing to do.\nSet something for import.")
         return False
-    file_ext = 'psk'
 
     print("--------------------------------------------------")
     print("---------SCRIPT EXECUTING PYTHON IMPORTER---------")
@@ -165,7 +219,6 @@ def pskimport(filepath, bImportmesh, bImportbone, bDebugLogPSK, bImportsingleuv)
         return False
 
     if bDebugLogPSK:
-        #logpath = filepath.lower().replace("."+file_ext, ".txt")
         logpath = filepath + ".txt"
         print("logpath:", logpath)
         logf = open(logpath, 'w')
@@ -220,6 +273,8 @@ def pskimport(filepath, bImportmesh, bImportbone, bDebugLogPSK, bImportsingleuv)
 
         printlog_header()
 
+    isPskx = False
+
     # file name w/out extension
     gen_name_part = util_gen_name_part(filepath)
     gen_names = {
@@ -237,9 +292,10 @@ def pskimport(filepath, bImportmesh, bImportbone, bDebugLogPSK, bImportsingleuv)
     read_chunk()
 
     # check file header
-    if not util_is_header_valid(filepath, file_ext, chunk_header_id, chunk_header_type):
+    if not util_is_header_valid(filepath, 'psk', chunk_header_id, chunk_header_type):
         return False
 
+    utils_set_mode('OBJECT')
     #==================================================================================================
     # Points (Vertices)
     #==================================================================================================
@@ -267,26 +323,33 @@ def pskimport(filepath, bImportmesh, bImportbone, bDebugLogPSK, bImportsingleuv)
     read_chunk()
 
     if bImportmesh:
+
+        if chunk_header_datacount > 65536:  # NumVerts
+            print('Probably PSKX! %i Vertices.' % chunk_header_datacount)
+            isPskx = True
+
         uv_material_indexes = []
         UVCoords = [None] * chunk_header_datacount
         # UVCoords record format = [pntIndx, U coord, v coord]
-        printlog("[pntIndx, U coord, v coord]\n")
+        printlog("[pntIndx, U coord, v coord, material_index]\n")
         for counter in range(chunk_header_datacount):
             (point_index,
              u, v,
              material_index) = unpack_from('=IffBxxx', chunk_data, counter * chunk_header_datasize)
+            # =IffBxxx
+            # = mean: don't align automatically
 
             # print(point_index, u, v, material_index)
-            UVCoords[counter] = (point_index, u, v)
+            UVCoords[counter] = (point_index, u, v, material_index)
 
-            printlog_line(point_index, u, v)
+            printlog_line(point_index, u, v, material_index)
             if not material_index in uv_material_indexes:
                 uv_material_indexes.append(material_index)
 
     #==================================================================================================
     # Faces
     #==================================================================================================
-    # read the FACE0000 header
+    # read the FACE0000 header or FACE3200 (pskx)
     read_chunk()
     if bImportmesh:
         # PSK FACE0000 fields: WdgIdx1|WdgIdx2|WdgIdx3|MatIdx|AuxMatIdx|SmthGrp
@@ -301,10 +364,14 @@ def pskimport(filepath, bImportmesh, bImportbone, bDebugLogPSK, bImportsingleuv)
         # smlist = []
         mat_groups = {}
 
+        unpack_format = '=HHHBBI'
+        if isPskx:
+            unpack_format = '=IIIBBI'
+
         for counter in range(chunk_header_datacount):
             (pntIndxA, pntIndxB, pntIndxC,
              MatIndex, AuxMatIndex, SmoothingGroup
-             ) = unpack_from('hhhbbi', chunk_data, counter * chunk_header_datasize)
+             ) = unpack_from(unpack_format, chunk_data, counter * chunk_header_datasize)
 
             printlog_line(pntIndxA, pntIndxB, pntIndxC,
                           MatIndex, AuxMatIndex, SmoothingGroup)
@@ -397,10 +464,11 @@ def pskimport(filepath, bImportmesh, bImportbone, bDebugLogPSK, bImportsingleuv)
          quat_x, quat_y, quat_z, quat_w,  # 4 5 6 7
          vec_x, vec_y, vec_z,  # 8 9 10
          joint_length,  # 11
-         scale_x, scale_y, scale_z) = unpack_from('64s3i11f', chunk_data, chunk_header_datasize * counter)
+         scale_x, scale_y, scale_z) = unpack_from('64s3I11f', chunk_data, chunk_header_datasize * counter)
 
         md5_bone = class_md5_bone()
 
+        # print('vec_tail_axis', md5_bone.vec_tail_axis)
         bone_name = util_bytes_to_str(name_raw)
 
         printlog_line(util_bytes_to_str(name_raw), flags, NumChildren, ParentIndex, quat_x, quat_y, quat_z, quat_w,
@@ -410,6 +478,13 @@ def pskimport(filepath, bImportmesh, bImportbone, bDebugLogPSK, bImportsingleuv)
         md5_bone.bone_index = counter
         md5_bone.parent_index = ParentIndex
         md5_bone.scale = (scale_x, scale_y, scale_z)
+
+        # dev
+        md5_bone.quat_local = Quaternion((quat_w, quat_x, quat_y, quat_z))
+        md5_bone.quat_global = Quaternion((quat_w, quat_x, quat_y, quat_z))
+
+        # dev
+        # print(bone_name," %.2f, %.2f, %.2f" % tuple(math.degrees(a) for a in md5_bone.quat_local.to_euler()))
 
         bni_dict[md5_bone.name] = md5_bone.bone_index
 
@@ -421,26 +496,29 @@ def pskimport(filepath, bImportmesh, bImportbone, bDebugLogPSK, bImportsingleuv)
         # if bone_name[:5] == 'Dummy':
         # print(bone_name, Quaternion((quat_w, quat_x, quat_y, quat_z)).to_euler())
 
-        # root bone not conjugated.
+        matrix_local_rot = quat_mat
+
+        # don't back-rotate root bone.
         if md5_bone.parent_index == 0 and md5_bone.bone_index == md5_bone.parent_index:
-            matrix_local_rot = quat_mat
             matrix_local = Matrix.Translation(pos_vec) * matrix_local_rot
+            # matrix_local_rot = Euler((0,0,0)).to_matrix().to_4x4()
         else:
-            matrix_local_rot = quat_mat
             matrix_local = Matrix.Translation(
                 pos_vec) * matrix_local_rot.inverted()
 
-        md5_bone.__matrix_local_rot = matrix_local_rot
-        md5_bone.__matrix_global_rot = matrix_local_rot
-        md5_bone.__matrix_local = matrix_local
-        md5_bone.__matrix_global = matrix_local
+        # matrix_local = matrix_local_rot * Matrix.Translation( pos_vec )
+
+        md5_bone.matrix_local_rot = matrix_local_rot
+        md5_bone.matrix_global_rot = matrix_local_rot
+        md5_bone.matrix_local = matrix_local
+        md5_bone.matrix_global = matrix_local
 
         md5_bones.append(md5_bone)
         #print(md5_bone.name, md5_bone.quater.to_quaternion())
         #print(counter, bone_name, ParentIndex)
 
     # root bone must have parent_index = 0 and selfindex = 0
-    # sounds like this code little useless, bcs only first bone can be root(in this conditions)
+
     for md5_bone in md5_bones:
 
         if md5_bone.parent_index == 0:
@@ -451,14 +529,26 @@ def pskimport(filepath, bImportmesh, bImportbone, bDebugLogPSK, bImportsingleuv)
         md5_bone.parent = md5_bones[md5_bone.parent_index]
         md5_bone.parent_name = md5_bone.parent.name
 
-        matrix_global = md5_bone.parent.__matrix_global * md5_bone.__matrix_local
-        md5_bone.__matrix_global = matrix_global
+        # global position + rotation
+        matrix_global = md5_bone.parent.matrix_global * md5_bone.matrix_local
+        md5_bone.matrix_global = matrix_global
 
-        # matrix_global_rot = md5_bone.parent.__matrix_global_rot * md5_bone.__matrix_local_rot
-        matrix_global_rot = md5_bone.parent.__matrix_global_rot * \
-            md5_bone.__matrix_local_rot.inverted()
-        md5_bone.__matrix_global_rot = matrix_global_rot
+        # matrix_global_rot = md5_bone.parent.matrix_global_rot * md5_bone.matrix_local_rot
+        # matrix_global_rot =  md5_bone.matrix_local_rot * md5_bone.parent.matrix_global_rot
+        matrix_global_rot = md5_bone.parent.matrix_global_rot * md5_bone.matrix_local_rot
+        md5_bone.matrix_global_rot = matrix_global_rot
 
+        md5_bone.quat_global = md5_bone.parent.quat_global.copy()
+        md5_bone.quat_global.rotate(md5_bone.quat_local)
+        md5_bone.quat_global = md5_bone.parent.quat_global * \
+            md5_bone.quat_local.conjugated()
+
+        # if md5_bone.name[-3:] == 'HIP':
+        # print(md5_bone.name)
+        # print(md5_bone.quat_global.to_euler())
+        # print(md5_bone.quat_local.to_euler())
+        # print("%.2f, %.2f, %.2f" % tuple(math.degrees(a) for a in md5_bone.quat_global.to_euler()))
+        # print("%.2f, %.2f, %.2f" % tuple(math.degrees(a) for a in md5_bone.quat_local.to_euler()))
     #md5_bones.sort( key=lambda bone: bone.parent_index)
     print('-- Bones --')
     print('Count: %i' % len(md5_bones))
@@ -505,22 +595,65 @@ def pskimport(filepath, bImportmesh, bImportbone, bDebugLogPSK, bImportsingleuv)
             armature_obj.data.edit_bones.active = edit_bone
 
             ##########################################################
-            joint_vector = md5_bone.__matrix_global * Vector()
+            joint_vector = md5_bone.matrix_global * Vector()
             edit_bone.head = joint_vector
 
-            vector_tail_end_up = md5_bone.__matrix_global_rot * \
-                Vector((0, 1, 0))
-            vector_tail_end_dir = md5_bone.__matrix_global_rot * \
-                Vector((1, 0, 0))
+            vector_tail_end_up = md5_bone.matrix_global_rot * Vector((0, 1, 0))
+            # vector_tail_end_dir = md5_bone.matrix_global_rot * Vector((1,0,0))
+            # vector_tail_end_dir = Vector((1,1,1)) * md5_bone.matrix_global_rot
             vector_tail_end_up.normalize()
-            vector_tail_end_dir.normalize()
-            edit_bone.tail = edit_bone.head \
-                + vector_tail_end_dir * bpy.context.scene.psk_import.bonesize
+
+            # dev
+            # acopy = md5_bone.matrix_global #* md5_bone.quat_global.to_matrix().to_4x4()
+
+            vecc = blen_calc_bone_orient(
+                md5_bones, md5_bone, bpy.context.scene.psk_import.bonesize)
+
+            zvec = Vector((0, 1, 0))
+            edit_bone['base_rotation'] = zvec.rotation_difference(
+                md5_bone.vec_tail_axis)
+            # if md5_bone.
+
+            # vecc = (md5_bone.matrix_global) * Vector((0,bpy.context.scene.psk_import.bonesize,0))
+            # vecc.rotate(md5_bone.quat_global)
+            # if md5_bone.parent_name == 'ROOT':
+            # print(md5_bone.quat_global.to_euler())
+            # print( md5_bone.matrix_global)
+            # print( acopy)
+            # print( vecc)
+            edit_bone.tail = vecc
+
             edit_bone.align_roll(vector_tail_end_up)
+            # edit_bone.align_roll(vecc)
             ###########################################################
 
             if md5_bone.parent is not None:
                 edit_bone.parent = armature_obj.data.edit_bones[md5_bone.parent_name]
+            else:
+                continue
+
+            '''
+            # dev
+            edit_bone = armature_obj.data.edit_bones.new(md5_bone.name + "__2")
+            edit_bone.use_connect = False
+            edit_bone.use_inherit_rotation = True
+            edit_bone.use_inherit_scale = True
+            edit_bone.use_local_location = True
+            armature_obj.data.edit_bones.active = edit_bone
+            
+            obj = []
+            vecfix = blen_calc_bone_orient(md5_bones, md5_bone, bpy.context.scene.psk_import.bonesize, obj)
+            
+            # vecc = md5_bone.matrix_global * Vector((0,bpy.context.scene.psk_import.bonesize,0))
+            vecc = md5_bone.matrix_global.translation + obj[0]
+            joint_vector.y += 40
+            vecc.y += 40
+            edit_bone.head = joint_vector
+            edit_bone.tail = vecc
+            
+            if md5_bone.parent is not None:
+                edit_bone.parent = armature_obj.data.edit_bones[md5_bone.parent_name]
+            '''
 
     # bpy.context.scene.update()
     #==================================================================================================
@@ -739,7 +872,7 @@ def psaimport(filepath, context, bFilenameAsPrefix=False, bActionsToTrack=False)
     print("---------SCRIPT EXECUTING PYTHON IMPORTER---------")
     print("--------------------------------------------------")
     print("Importing file: ", filepath)
-    file_ext = 'psa'
+
     try:
         psafile = open(filepath, 'rb')
     except IOError:
@@ -749,7 +882,6 @@ def psaimport(filepath, context, bFilenameAsPrefix=False, bActionsToTrack=False)
 
     debug = True
     if (debug):
-        # logpath = filepath.lower().replace("."+file_ext, ".txt")
         logpath = filepath + ".txt"
         print("logpath:", logpath)
         logf = open(logpath, 'w')
@@ -836,7 +968,7 @@ def psaimport(filepath, context, bFilenameAsPrefix=False, bActionsToTrack=False)
     #==============================================================================================
     read_chunk()
 
-    if not util_is_header_valid(filepath, file_ext, chunk_header_id, chunk_header_type):
+    if not util_is_header_valid(filepath, 'psa', chunk_header_id, chunk_header_type):
         if(debug):
             logf.close()
         return False
@@ -1053,8 +1185,9 @@ def psaimport(filepath, context, bFilenameAsPrefix=False, bActionsToTrack=False)
 
         pose_bones = armature_obj.pose.bones
 
-        for i in range(NumRawFrames):
-            # for i in range(0,5):
+        # for i in range(NumRawFrames):
+        # first 5 frames(for testing)
+        for i in range(0, 5):
             for j in range(Totalbones):
                 if j not in BoneNotFoundList:
                     bName = BoneIndex2NamePairMap[j]
@@ -1066,24 +1199,37 @@ def psaimport(filepath, context, bFilenameAsPrefix=False, bActionsToTrack=False)
 
                     # mat = Matrix()
                     quat_c = quat.conjugated()
+                    # quat_c = quat
                     armature_obj.data.bones.active = pose_bone.bone
 
                     if pbone.parent != None:
+                        base_rot = Quaternion(pose_bone.bone['base_rotation'])
 
+                        if pose_bone.name == 'RightUpLeg':
+                            print(pose_bone.bone.name, base_rot.to_euler())
                         # matrix for calc's // calc from parent
-                        mat = Matrix.Translation(
-                            pos) * quat_c.to_matrix().to_4x4()
+                        # mat = Matrix.Translation(pos) * quat_c.to_matrix().to_4x4()
+                        mat = (quat_c).to_matrix().to_4x4()
+                        mat.translation = pos
                         mat = pbone.parent.Transform * mat
 
                         # matrix for posing
                         mat_view = pbone.parent.Transform * \
                             Matrix.Translation(pos)
 
-                        rot = pbone.parent.Transform.to_quaternion() * quat_c
-                        rot = rot.to_matrix().to_4x4()
+                        # base_rot = armature_obj.data.bones[bNameq
+                        mat2 = (base_rot.inverted() * quat_c *
+                                base_rot).to_matrix().to_4x4()
+                        mat2.translation = pos
+                        mat2 = pbone.parent.Transform * mat2
 
-                        pose_bone.matrix = Matrix.Translation(mat_view.translation) \
-                            * rot * mat_pose_rot_fix
+                        # rot = quat_c * pbone.parent.Transform.to_quaternion()
+                        # rot = rot.to_matrix().to_4x4()
+
+                        # pose_bone.matrix = Matrix.Translation(mat_view.translation) \
+                        # * rot
+                        pose_bone.matrix = mat2
+                        # pose_bone.matrix = mat2 * base_rot.to_matrix().to_4x4()
 
                         # save mat for children calc's
                         pbone.Transform = mat
@@ -1128,7 +1274,7 @@ def psaimport(filepath, context, bFilenameAsPrefix=False, bActionsToTrack=False)
             is_first_action = False
 
         # break on first animation set
-        # break
+        break
 
     # set to rest position or set to first imported action
     if not bActionsToTrack:
@@ -1215,7 +1361,7 @@ class PskImportSharedOptions():
     bonesize = FloatProperty(
         name="Bone length",
         description="Constant length for all bones. From head to tail distance",
-        default=0.5, min=0.01, max=10, step=0.1, precision=2,
+        default=1.0, min=0.01, max=10, step=0.1, precision=2,
     )
     single_uvtexture = BoolProperty(
         name="Single UV texture",
@@ -1318,7 +1464,7 @@ class IMPORT_OT_psa(bpy.types.Operator):
     )
     bActionsToTrack = BoolProperty(
         name="All actions to NLA track",
-        description="Add all imported action to new NLAtrack. One by one.",
+        description="Add all imported actions to new NLAtrack. One by one.",
         default=False,
     )
 
@@ -1450,7 +1596,8 @@ def menu_func(self, context):
 def register():
     bpy.utils.register_module(__name__)
     bpy.types.INFO_MT_file_import.append(menu_func)
-    bpy.types.Scene.psk_import = PointerProperty(type=PskImportOptions)
+    bpy.types.Scene.psk_import = PointerProperty(
+        type=PskImportOptions, name="Psk/Psa import options")
 
 
 def unregister():
