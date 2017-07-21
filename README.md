@@ -1,5 +1,9 @@
 Blender3D Import psk psa addon
 ========================
+  
+(!!! animation import is broken in this branch !!!)  
+  
+<hr>
 <ul>
 <li>Mesh and skeleton from <b>.psk/.pskx</b></li>
 <li>Animation from <b>.psa</b></li>

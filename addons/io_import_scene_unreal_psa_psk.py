@@ -17,9 +17,10 @@
 # ##### END GPL LICENSE BLOCK #####
 
 bl_info = {
-    "name": "Import Unreal Skeleton Mesh (.psk)/Animation Set (.psa)",
+    "name": "Import Unreal Skeleton Mesh (.psk) (no_anim)",
+    # "name": "Import Unreal Skeleton Mesh (.psk)/Animation Set (.psa)",
     "author": "Darknet, flufy3d, camg188, befzz",
-    "version": (2, 6, 2),
+    "version": (2, 6, 3),
     "blender": (2, 64, 0),
     "location": "File > Import > Skeleton Mesh (.psk)/Animation Set (.psa)",
     "description": "Import Skeleleton Mesh/Animation Data",
@@ -95,6 +96,8 @@ class class_md5_bone:
     quat_global = None
     vec_tail_axis = Vector((0, 0, 1))
 
+    have_weights = False
+
     # def __init__(self):
     # self.vec_tail_axis = Vector((0,0,1))
 
@@ -106,7 +109,8 @@ class class_md5_bone:
         print("parent index: ", self.parent_index)
         # print ("blenderbone: ", self.blenderbone)
 
-def blen_calc_bone_orient(md5_bones, md5_bone, blen, outv=[]):
+
+def blen_calc_bone_orient(md5_bones, md5_bone, blen_min):
     children = []
     for bone in md5_bones:
         if bone.bone_index == 0:
@@ -117,11 +121,12 @@ def blen_calc_bone_orient(md5_bones, md5_bone, blen, outv=[]):
     # print("%s %i" % (md5_bone.name, len(children)))
     # print(md5_bone.name, len(children))
     if len(children) == 0:
-        # dev
-        outv.append(Vector((0, blen, 0)))
         # print('leaf',md5_bone.vec_tail_axis)
         # Vector((0,blen,0))
-        return md5_bone.matrix_global * md5_bone.parent.vec_tail_axis
+        if bpy.context.scene.psk_import.bonesize_auto:
+            return md5_bone.matrix_global * (md5_bone.parent.vec_tail_axis.normalized() * blen_min)
+        else:
+            return md5_bone.matrix_global * md5_bone.parent.vec_tail_axis
         # dev
 
     sumvec = Vector()
@@ -132,6 +137,11 @@ def blen_calc_bone_orient(md5_bones, md5_bone, blen, outv=[]):
     vec = md5_bone.quat_global.inverted() * vec_to
 
     # mrot = md5_bone.matrix_global.to_3x3()
+
+    if bpy.context.scene.psk_import.bonesize_auto:
+        blen = vec.length
+    else:
+        blen = blen_min
 
     vec_ori = Vector()
     if abs(vec[0]) > abs(vec[1]):
@@ -144,12 +154,11 @@ def blen_calc_bone_orient(md5_bones, md5_bone, blen, outv=[]):
             vec_ori.y = blen if vec[1] >= 0 else -blen
         else:
             vec_ori.z = blen if vec[2] >= 0 else -blen
-    outv.append(vec_ori)
 
     # vec_ori = vec_ori.normalized() * (vec.length/2)
     # if md5_bone.name == 'RightUpLeg':
     #     print('vec_ori', vec_ori)
-    md5_bone.vec_tail_axis = vec_ori.copy()
+    md5_bone.vec_tail_axis = vec_ori
     # print('XXX',md5_bone.vec_tail_axis)
     return md5_bone.matrix_global * vec_ori
     # return md5_bone.matrix_global * Vector((0,bpy.context.scene.psk_import.bonesize,0))
@@ -539,7 +548,7 @@ def pskimport(filepath, bImportmesh, bImportbone, bDebugLogPSK, bImportsingleuv)
         md5_bone.matrix_global_rot = matrix_global_rot
 
         md5_bone.quat_global = md5_bone.parent.quat_global.copy()
-        md5_bone.quat_global.rotate(md5_bone.quat_local)
+        # md5_bone.quat_global.rotate(md5_bone.quat_local)
         md5_bone.quat_global = md5_bone.parent.quat_global * \
             md5_bone.quat_local.conjugated()
 
@@ -579,9 +588,9 @@ def pskimport(filepath, bImportmesh, bImportbone, bDebugLogPSK, bImportsingleuv)
 
         # TODO: options for axes and x_ray?
         armature_data.show_axes = True
-        armature_obj.show_x_ray = True
+        armature_data.draw_type = 'STICK'
 
-        # print("creating bone(s)")
+        armature_obj.show_x_ray = True
 
         # Go to edit mode for the bones
         utils_set_mode('EDIT')
@@ -610,8 +619,11 @@ def pskimport(filepath, bImportmesh, bImportbone, bDebugLogPSK, bImportsingleuv)
                 md5_bones, md5_bone, bpy.context.scene.psk_import.bonesize)
 
             zvec = Vector((0, 1, 0))
+
+            edit_bone['quat_local'] = md5_bone.quat_local
             edit_bone['base_rotation'] = zvec.rotation_difference(
                 md5_bone.vec_tail_axis)
+            # edit_bone['base_rotation'] = md5_bone.quat_local
             # if md5_bone.
 
             # vecc = (md5_bone.matrix_global) * Vector((0,bpy.context.scene.psk_import.bonesize,0))
@@ -701,6 +713,8 @@ def pskimport(filepath, bImportmesh, bImportbone, bDebugLogPSK, bImportsingleuv)
          BoneIndex) = unpack_from('fii', chunk_data, chunk_header_datasize * counter)
 
         RWghts[counter] = (PointIndex, BoneIndex, Weight)
+
+        md5_bones[BoneIndex].have_weights = True
 
         #print("weight:", PointIndex, BoneIndex, Weight)
 
@@ -816,7 +830,8 @@ def pskimport(filepath, bImportmesh, bImportbone, bDebugLogPSK, bImportsingleuv)
         # create bone vertex group #deal with bone id for index number
         for md5_bone in md5_bones:
             # group = mesh_obj.vertex_groups.new(bone.name)
-            mesh_obj.vertex_groups.new(md5_bone.name)
+            if md5_bone.have_weights:
+                mesh_obj.vertex_groups.new(md5_bone.name)
 
         for vgroup in mesh_obj.vertex_groups:
             # print(vgroup.name, ":", vgroup.index)
@@ -836,6 +851,23 @@ def pskimport(filepath, bImportmesh, bImportbone, bDebugLogPSK, bImportsingleuv)
         bpy.context.scene.objects.active = mesh_obj
 
         if bImportbone:
+            bone_group_unused = armature_obj.pose.bone_groups.new(
+                "Unused bones")
+            bone_group_unused.color_set = 'THEME04'
+
+            bone_group_nochild = armature_obj.pose.bone_groups.new(
+                "No children")
+            bone_group_nochild.color_set = 'THEME03'
+
+            armature_data.show_group_colors = True
+
+            for pbone in armature_obj.pose.bones:
+                if mesh_obj.vertex_groups.find(pbone.name) == -1:
+                    pbone.bone_group = bone_group_unused
+                else:
+                    if len(pbone.children) == 0:
+                        pbone.bone_group = bone_group_nochild
+
             armature_obj.select = True
             # parenting mesh to armature object
             mesh_obj.parent = armature_obj
@@ -865,6 +897,7 @@ class class_psa_bone:
     fcurve_quat_z = None
     fcurve_quat_w = None
     prev_quat = None
+    # quat_local = None
 
 
 def psaimport(filepath, context, bFilenameAsPrefix=False, bActionsToTrack=False):
@@ -1149,6 +1182,11 @@ def psaimport(filepath, context, bFilenameAsPrefix=False, bActionsToTrack=False)
         first_action = None
 
     for raw_action in Action_List:
+        counter += 1
+
+        if counter != 4:
+            continue
+
         Name = raw_action[0]
         Group = raw_action[1]
 
@@ -1161,7 +1199,7 @@ def psaimport(filepath, context, bFilenameAsPrefix=False, bActionsToTrack=False)
         action = bpy.data.actions.new(name=Name)
 
         # force print usefull information to console(due to possible long execution)
-        counter += 1
+
         print("Action {0:>3d}/{1:<3d} frames: {2:>4d} {3}".format(
             counter, len(Action_List), NumRawFrames, Name)
         )
@@ -1187,7 +1225,7 @@ def psaimport(filepath, context, bFilenameAsPrefix=False, bActionsToTrack=False)
 
         # for i in range(NumRawFrames):
         # first 5 frames(for testing)
-        for i in range(0, 5):
+        for i in range(0, 15):
             for j in range(Totalbones):
                 if j not in BoneNotFoundList:
                     bName = BoneIndex2NamePairMap[j]
@@ -1196,7 +1234,7 @@ def psaimport(filepath, context, bFilenameAsPrefix=False, bActionsToTrack=False)
 
                     pos = Raw_Key_List[raw_key_index][0]
                     quat = Raw_Key_List[raw_key_index][1]
-
+                    # print(pose_bone.name,pos)
                     # mat = Matrix()
                     quat_c = quat.conjugated()
                     # quat_c = quat
@@ -1204,9 +1242,11 @@ def psaimport(filepath, context, bFilenameAsPrefix=False, bActionsToTrack=False)
 
                     if pbone.parent != None:
                         base_rot = Quaternion(pose_bone.bone['base_rotation'])
+                        quat_local = Quaternion(pose_bone.bone['quat_local'])
 
-                        if pose_bone.name == 'RightUpLeg':
-                            print(pose_bone.bone.name, base_rot.to_euler())
+                        if pose_bone.name == 'RightArm':
+                            print(pose_bone.bone.name,
+                                  base_rot.to_euler(), quat.to_euler())
                         # matrix for calc's // calc from parent
                         # mat = Matrix.Translation(pos) * quat_c.to_matrix().to_4x4()
                         mat = (quat_c).to_matrix().to_4x4()
@@ -1218,17 +1258,30 @@ def psaimport(filepath, context, bFilenameAsPrefix=False, bActionsToTrack=False)
                             Matrix.Translation(pos)
 
                         # base_rot = armature_obj.data.bones[bNameq
-                        mat2 = (base_rot.inverted() * quat_c *
-                                base_rot).to_matrix().to_4x4()
-                        mat2.translation = pos
-                        mat2 = pbone.parent.Transform * mat2
+                        # mat2 = (base_rot.inverted() * quat_c *
+                        # base_rot).to_matrix().to_4x4()
+                        # mat2.translation = pos
+                        # mat2 = pbone.parent.Transform * mat2
 
                         # rot = quat_c * pbone.parent.Transform.to_quaternion()
                         # rot = rot.to_matrix().to_4x4()
 
                         # pose_bone.matrix = Matrix.Translation(mat_view.translation) \
                         # * rot
-                        pose_bone.matrix = mat2
+                        # pose_bone.matrix = mat2
+                        origRot = quat_local
+                        # pose_bone.location = pose_bone.bone.matrix_local.translation - pos
+
+                        # eul = quat.to_euler()
+                        # quatf = Euler((eul.x,eul.y,eul.z),'XYZ').to_quaternion()
+
+                        # quatf = quat.rotation_difference(base_rot)
+                        # quatf = origRot.rotation_difference(quat)
+                        quatf = base_rot * quat * base_rot.inverted()
+
+                        pose_bone.rotation_quaternion = quat
+                        # pose_bone.rotation_quaternion = origRot.inverted() * quat * origRot
+                        # pose_bone.rotation_quaternion = quat.inverted() * Quaternion()
                         # pose_bone.matrix = mat2 * base_rot.to_matrix().to_4x4()
 
                         # save mat for children calc's
@@ -1237,7 +1290,7 @@ def psaimport(filepath, context, bFilenameAsPrefix=False, bActionsToTrack=False)
                         # TODO fix needed?
                         mat = Matrix.Translation(
                             pos) * quat.to_matrix().to_4x4()
-                        pose_bone.matrix = mat * mat_pose_rot_fix
+                        # pose_bone.matrix = mat * mat_pose_rot_fix
                         pbone.Transform = mat
 
                     loc = pose_bone.location
@@ -1359,9 +1412,9 @@ class PskImportSharedOptions():
         default=False,
     )
     bonesize = FloatProperty(
-        name="Bone length",
+        name="Minimum Bone length",
         description="Constant length for all bones. From head to tail distance",
-        default=1.0, min=0.01, max=10, step=0.1, precision=2,
+        default=3.0, min=0.1, max=10, step=0.1, precision=2,
     )
     single_uvtexture = BoolProperty(
         name="Single UV texture",
@@ -1377,12 +1430,59 @@ class PskImportSharedOptions():
 
 
 class PskImportOptions(bpy.types.PropertyGroup, PskImportSharedOptions):
+    bonesize_auto = BoolProperty(
+        name="Auto-size bones",
+        description="Bone size(length) determind by children",
+        default=True,
+    )
     armature_list = CollectionProperty(type=UDKImportArmaturePG)
     armature_list_idx = IntProperty()
     armature_selected = BoolProperty(
         name="Armature Selected",
         description="Choose Armature to Import psa animation data",
         default=False)
+
+
+def blen_hide_unused(armature_obj, mesh_obj):
+    def is_bone_useless(pbone):
+        is_useless = True
+        if len(pbone.children) == 0:
+            if mesh_obj.vertex_groups.get(pbone.name) != None:
+                is_useless = False
+        else:
+            for pbone_child in pbone.children:
+                is_useless = is_bone_useless(pbone_child)
+                if not is_useless:
+                    is_useless = False
+                    # break
+        # print(pbone.name, is_useless)
+        if is_useless:
+            pbone.hide = True
+        return is_useless
+
+    # print(armature_obj.data.bones[0].name)
+    is_bone_useless(armature_obj.data.bones[0])
+
+
+class ARMATURE_HIDE_UNUSED(bpy.types.Operator):
+    """Hide useless bones(no weights and no childrens)\n* Select mesh with armature modifier.\n* ALT + H to reveal."""
+    bl_idname = "armature.hide_unused"
+    bl_label = "Hide useless bones"
+    bl_options = {'UNDO'}
+
+    def execute(self, context):
+        if context.object.type == 'MESH':
+            for mod in context.object.modifiers:
+                if mod.type == 'ARMATURE' and mod.object:
+                    blen_hide_unused(
+                        context.object.modifiers[0].object, context.object)
+                else:
+
+                    util_ui_show_msg(
+                        "Can't find any situable Armature modifier for selected mesh.")
+                    print(
+                        "Can't find any situable Armature modifier for selected mesh.")
+        return {'FINISHED'}
 
 
 class IMPORT_OT_psk(bpy.types.Operator, PskImportSharedOptions):
@@ -1413,6 +1513,8 @@ class IMPORT_OT_psk(bpy.types.Operator, PskImportSharedOptions):
         sub = layout.row()
         sub.active = opts.import_mode != 'Mesh'
         sub.prop(opts, 'bonesize')
+        sub = layout.row()
+        sub.prop(opts, 'bonesize_auto')
         layout.prop(opts, 'debug_log')
 
     def execute(self, context):
@@ -1500,6 +1602,11 @@ class Panel_UDKImport(bpy.types.Panel):
         layout.label("Mesh and skeleton:")
         layout.operator(IMPORT_OT_psk.bl_idname, icon='MESH_DATA')
         layout.prop(opts, 'import_mode', expand=True)
+
+        sub = layout.row()
+        sub.operator(ARMATURE_HIDE_UNUSED.bl_idname, icon='BONE_DATA')
+        sub.enabled = (context.object !=
+                       None) and context.object.type == 'MESH'
 
         layout.separator()
         layout.label("Animation:")
