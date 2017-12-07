@@ -1,4 +1,4 @@
-No animation support!
----
+Moved to master branch.
+---------
 
-Sorry.
+=> [https://github.com/Befzz/blender3d_import_psk_psa](https://github.com/Befzz/blender3d_import_psk_psa)
